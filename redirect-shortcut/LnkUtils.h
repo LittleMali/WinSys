@@ -1,9 +1,11 @@
 #ifndef _LNK_UTILS_H_
 #define _LNK_UTILS_H_
 
-#include "shobjidl.h"
-#include "shlguid.h"
 #include <string>
+#include <iostream>
+#include <shlobj.h>
+#include <shlwapi.h>
+#include <winbase.h>
 
 class CLnkUtils
 {

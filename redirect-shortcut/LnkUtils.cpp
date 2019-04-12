@@ -1,8 +1,7 @@
 #include "stdafx.h"
 #include "LnkUtils.h"
-#include <shlobj.h>
-#include <winbase.h>
-#include <shlwapi.h>
+
+#pragma comment(lib, "shlwapi.lib")
 
 BOOL CLnkUtils::ReplaceLnk(LPCTSTR lpDstDir, LPCTSTR lpOldFilePath, LPCTSTR lpNewFilePath, BOOL bWalkInDir /* = FALSE */)
 {
@@ -67,6 +66,9 @@ BOOL CLnkUtils::CheckLnk(LPCTSTR lpLnk, LPCTSTR lpOldFilePath, LPCTSTR lpNewFile
     TCHAR szGetRawPath[MAX_PATH + 2] = {0}, szExpandPath[MAX_PATH + 2] = {0};
     WIN32_FIND_DATA wfd;
 
+    TCHAR szIconLoc[MAX_PATH] = {0};
+    int nIconIndex = 0;
+
     // Get a pointer to the IShellLink interface.
     hres = ::CoCreateInstance(CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, IID_IShellLink, (LPVOID *)&psl);
     if (FAILED(hres) || !psl)
@@ -105,8 +107,17 @@ BOOL CLnkUtils::CheckLnk(LPCTSTR lpLnk, LPCTSTR lpOldFilePath, LPCTSTR lpNewFile
         goto Exit0;
     }
 
-    // we find target lnk, replace it
-    std::wcout << L"match and redirect lnk: " << lpLnk << std::endl;
+    hres = psl->GetIconLocation(szIconLoc, MAX_PATH, &nIconIndex);
+    if (FAILED(hres))
+    {
+        goto Exit0;
+    }
+
+    hres = psl->SetIconLocation(lpNewFilePath, nIconIndex);
+    if (FAILED(hres))
+    {
+        //
+    }
 
     hres = psl->SetPath(lpNewFilePath);
     if (FAILED(hres))
@@ -114,11 +125,13 @@ BOOL CLnkUtils::CheckLnk(LPCTSTR lpLnk, LPCTSTR lpOldFilePath, LPCTSTR lpNewFile
         goto Exit0;
     }
 
-    hres = ppf->Save(NULL, 0);
+    hres = ppf->Save(lpLnk, TRUE);
     if (FAILED(hres))
     {
         goto Exit0;
     }
+    
+    LOGW(L"find target lnk and save suc: %s", lpLnk);
 
 Exit0:
     if (ppf)

@@ -2,13 +2,7 @@
 //
 
 #include "stdafx.h"
-
-#include "strsafe.h"
 #include "LnkUtils.h"
-#include <shlobj.h>
-#include <shlwapi.h>
-
-
 
 #define MAIN_EXE_FILE								_T("QMProxyAcceler.exe")
 
