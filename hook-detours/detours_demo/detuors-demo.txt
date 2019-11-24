@@ -179,7 +179,9 @@ int Fake_Target(int aa, int bb)
 00EF4E23 8B 45 FC             mov         eax,dword ptr [ss]  
 }
 
-注意： g_pfnTarget = 0x00ee00c0 是函数指针，这个指针值为 0x00ee00c0 。还记得我们在第8步的处理吗！target函数就是在那时被替换的。
+注意： g_pfnTarget = 0x00ee00c0 是函数指针，这个指针值为 0x00ee00c0 。
+还记得detour在Attach时传入的参数吗？第一个参数是(LPVOID*)&g_pfnTarget，传入的是函数指针的指针。
+然后，我们在第8步处理的时候，*o->ppbPointer的赋值操作，这就是把函数指针的值给修改了，因此，对原始target函数的调用实际上调用到了另一个地址去。
 
 12、调用原始函数。
 00EE00C0 55                   push        ebp  
