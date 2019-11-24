@@ -1,0 +1,205 @@
+hProc = 0x00ef0000
+g_pfnTarget = 0x00ef4de0
+g_pfnFakeTarget = 0x00ef4e00
+
+-------------------------------------- DetourAttach --------------------------------------
+1、分配buffer
+pTrampoline = detour_alloc_trampoline(pbTarget);
+[detour]detours: pbTramp=00EE00C0, pDetour=00EF4E00
+注：并不是从region[0]开始使用的，看代码是从regin[3]开始，所以 pbTramp=00EE0000 + 3 * 0x40。0x40 = sizeof(DETOUR_TRAMPOLINE)
+
+pLow < pTarget < pHigh: 在target上下2GB内寻找可以分配的内存
+	可分配内存满足MEM_FREE & size > DETOUR_REGION_SIZE	
+[detour][00010000..00EF4DE0..80E74DE0]
+[detour] Looking for free region below 00EF0000:
+[detour]  Try 00EF0000
+[detour]  Try 00EF0000 => 00EF0000..00EF0FFF   1000
+[detour]  Try 00EE0000
+[detour]  Try 00EE0000 => 00EE0000..00EEFFFF  10000
+[detour]  Allocated region 00EE0000..00EEFFFF
+
+2、从target拷贝指令，用于保存现场
+cbJump = SIZE_OF_JMP = 5 byte
+while (cbTarget < cbJump)
+	pTarget (0x00ef4de0) --- copy to --> pTrampoline->rbCode (00EE00C0)
+	从target按汇编指令拷贝>=5bytes的指令到跳转buf中。下面的7bytes指令就被拷贝过去了。
+00EF4DE0 55                   push        ebp  
+00EF4DE1 8B EC                mov         ebp,esp  
+00EF4DE3 51                   push        ecx  
+00EF4DE4 8B 45 08             mov         eax,dword ptr [a]  
+
+[detour]detours: pbTramp=00EE00C0, pDetour=00EF4E00
+[detour] DetourCopyInstruction(00EE00C0,00EF4DE0)
+[detour] DetourCopyInstruction() = 00EF4DE1 (1 bytes)
+[detour] DetourCopyInstruction(00EE00C1,00EF4DE1)
+[detour] DetourCopyInstruction() = 00EF4DE3 (2 bytes)
+[detour] DetourCopyInstruction(00EE00C3,00EF4DE3)
+[detour] DetourCopyInstruction() = 00EF4DE4 (1 bytes)
+[detour] DetourCopyInstruction(00EE00C4,00EF4DE4)
+[detour] DetourCopyInstruction() = 00EF4DE7 (3 bytes)
+
+拷贝指令的时候还有一些判断：如果target函数过短，那意味会while循环会超过函数结尾，因此，while循环时要判断op code是否是jmp/ret/brk命令。
+
+3、从target拷贝指令，用于跳回原函数后继续执行。
+CopyMemory(pTrampoline->rbRestore, pbTarget, cbTarget);		// cbTarget = 0x7
+
+4、继续准备工作，生成jump指令 jmp +imm32 （相对地址跳转）, jmp回原函数继续执行。
+pbTrampoline = pTrampoline->rbCode + pTrampoline->cbCode;
+当前 pbTrampoline (0x00ee00c7) 指向了 rbCode 的第 [cbCode] 字节，意味着 跳过了拷贝过来的7bytes指令。
+
+pbTrampoline = detour_gen_jmp_immediate(pbTrampoline, pTrampoline->pbRemain); // 将pbTrampoline处的指令修改为jmp，jmp到pbRemain去，而pbRemain指向了target的第cbTarget(0x7)指令，这也就意味着，jump之后，相当于原函数继续执行。
+
+pbTrampoline = detour_gen_brk(pbTrampoline, pbPool);	// 在jump指令后继续brk指令，插入多少个brk呢，插入 pbPool - pbTrampoline 个 brk。
+
+至此，rbCode[30]里面存放着： 从target拷贝过来的0x7bytes指令 + jump回target继续执行 + brk命令
+
+5、修改target开头 cbTarget 的属性为 EWR
+[detour]detours: pbTarget=00EF4DE0: 55 8b ec 51 8b 45 08 03 45 0c 89 45		// target尚未被修改，此时打印出来的是原始值
+[detour]detours: pbTramp =00EE00C0: 55 8b ec 51 8b 45 08 e9 1b 4d 01 00		// rbCode[30]里面的值，存放了拷贝+jump imm32
+
+6、保存当前修改的结果
+o->ppbPointer = (PBYTE*)ppPointer;		// *ppPointer (0x00efa540) =0x00ef4de0，是一个指针，解引用后指向target
+o->pTrampoline = pTrampoline;			// 存下了数据结构 DETOUR_TRAMPOLINE (0x00ee00c0)
+o->pbTarget = pbTarget;					// 0x00ef4de0
+o->dwPerm = dwOld;						// target处旧内存页属性。在第5步中有修改。
+
+在 DetourAttach 时，这个数据结构先后被填充成这个样子。
+struct _DETOUR_TRAMPOLINE
+{
+    BYTE    rbCode[30];     // target code + jmp to pbRemain = 00EE00C0 ，先存放了target开始的7B指令，
+    BYTE    cbCode;         // size of moved target code. = 0x7
+    BYTE    cbCodeBreak;    // padding to make debugging easier.
+    BYTE    rbRestore[22];  // original target code. = target开始的7B指令。
+    BYTE    cbRestore;      // size of original target code. = 0x7
+    BYTE    cbRestoreBreak; // padding to make debugging easier.
+    PBYTE   pbRemain;       // first instruction after moved code. (0x00ef4de7) = pbTarget + cbTarget, 指向了target函数的第7个指令，意味着跳过了拷贝的指令。
+    PBYTE   pbDetour;       // first instruction of detour function. = pDetour (0x00ef4e00), 指向了hook函数
+};
+
+-------------------------------------- DetourTransactionCommit --------------------------------------
+7、修改target处入口指令，jump到hook函数执行。
+PBYTE pbCode = detour_gen_jmp_immediate(o->pbTarget, o->pTrampoline->pbDetour);		// 修改 0x00ef4de0 处的指令为jump，jump到 0x00ef4e00
+int TargetFunc(int a, int b)
+{
+00EF4DE0 E9 1B 00 00 00       jmp         Fake_Target (0EF4E00h)  
+    int s = a + b;
+00EF4DE5 45                   inc         ebp  
+00EF4DE6 08 03                or          byte ptr [ebx],al  
+00EF4DE8 45                   inc         ebp  
+00EF4DE9 0C 89                or          al,89h  
+00EF4DEB 45                   inc         ebp  
+00EF4DEC FC                   cld  
+    return s;
+00EF4DED 8B 45 FC             mov         eax,dword ptr [s]  
+}
+
+pbCode = detour_gen_brk(pbCode, o->pTrampoline->pbRemain);		// 插入一个brk
+int TargetFunc(int a, int b)
+{
+00EF4DE0 E9 1B 00 00 00       jmp         Fake_Target (0EF4E00h)  
+    int s = a + b;
+00EF4DE5 CC                   int         3  
+00EF4DE6 CC                   int         3  
+00EF4DE7 03 45 0C             add         eax,dword ptr [b]  
+00EF4DEA 89 45 FC             mov         dword ptr [s],eax  
+    return s;
+00EF4DED 8B 45 FC             mov         eax,dword ptr [s]  
+}
+
+我们可以看到，此时target函数入口处的指令被修改了。注意，在第一次修改为jump指令时，因为jump只有5bytes，因此，jump之后的指令被编译器错误的解释了(inc ebp)，我们只需要看op code即可。op code还是正确的。
+同时，jump是5bytes，而我们拷贝了7bytes，这意味着中间空了2bytes，因此，这2bytes要填充brk，这就是第二步要做的事情。
+
+8、替换原函数入口指令！！！
+*o->ppbPointer (0x00efa540) = o->pTrampoline->rbCode (00ee00c0);	// 这一步很重要！这是指向target函数入口的指针，其指向的值被修改为 rbCode 了，这也就意味着，对target原函数的调用，会被执行到rbCode指令，这些指令就是拷贝过来的指令+jump回去的指令。
+这里要理解清楚： DetourAttach((PVOID*)&g_pfnTarget, (LPVOID)g_pfnFakeTarget); 
+detour传入的第一个参数是 指针的指针，g_pfnTarget本身就是函数指针了，指针的指针被我们解引用并赋值了，这就意味着g_pfnTarget的值被修改了，也就是说 target 函数的入口地址不再是原始的0x00ef4de0，而是新的00ee00c0。任何对target函数的调用，都会跳转到新地址执行。
+
+[detour]detours: pbTramp =00EE00C0, pbRemain=00EF4DE7, pbDetour=00EF4E00, cbRestore=7
+[detour]detours: pbTarget=00EF4DE0: 55 8b ec 51 8b 45 08 03 45 0c 89 45 [before]
+[detour]detours: pbTarget=00EF4DE0: e9 1b 00 00 00 cc cc 03 45 0c 89 45 [after]
+[detour]detours: pbTramp =00EE00C0: 55 8b ec 51 8b 45 08 e9 1b 4d 01 00		// 继续说明：拷贝过来的7bytes+jump回去的指令。
+
+9、target处内存也属性还原。
+在第6步中有存下dwOld原属性值。
+
+-------------------------------------- TargetFunc(1, 2) --------------------------------------
+10、刚刚进入TargetFunc的状态，此时 EIP 指向 target函数内的第一条指令。
+    TargetFunc(1, 2);
+00EF4E79 6A 02                push        2  
+00EF4E7B 6A 01                push        1  
+00EF4E7D E8 5E FF FF FF       call        TargetFunc (0EF4DE0h)  
+00EF4E82 83 C4 08             add         esp,8  
+
+int TargetFunc(int a, int b)
+{
+00EF4DE0 E9 1B 00 00 00       jmp         Fake_Target (0EF4E00h)  	// EIP在这里。 jmp到hook函数去。
+    int s = a + b;
+00EF4DE5 CC                   int         3  
+00EF4DE6 CC                   int         3  
+00EF4DE7 03 45 0C             add         eax,dword ptr [b]  
+00EF4DEA 89 45 FC             mov         dword ptr [s],eax  
+    return s;
+00EF4DED 8B 45 FC             mov         eax,dword ptr [s]  
+}
+
+当进入call指令时， EIP = 00EF4DE0， ESP = 0042FC4C 。
+0x0042FC48  0042fc5c  \?B.
+0x0042FC4C  00ef4e82  ?N?.	// 返回地址
+0x0042FC50  00000001  ....	// 参数压栈
+0x0042FC54  00000002  ....
+
+int Fake_Target(int aa, int bb)
+{
+00EF4E00 55                   push        ebp 
+
+我们想一下这个call TargetFunc (0EF4DE0h) ，在call之前，形参a=1, b=2被压栈， call的时候，函数返回地址被压栈，然后进去target执行。
+target执行的第一条指令jmp到hook函数执行，那么，当EIP=00EF4E00 (此时的 ESP = 0042FC4C )时，即进入 Fake_Target 时，函数的上下文实际是target的。
+那么如果fake_target立即返回，cpu会取出栈上的返回地址继续执行，这个返回地址是target的。函数执行流还是正常的。
+
+11、我们在hook函数中又通过函数指针的形式调用了原函数，代码如下：
+
+int Fake_Target(int aa, int bb)
+{
+00EF4E00 55                   push        ebp  
+00EF4E01 8B EC                mov         ebp,esp  
+00EF4E03 83 EC 08             sub         esp,8  
+    int ss = aa - bb;
+00EF4E06 8B 45 08             mov         eax,dword ptr [aa]  
+00EF4E09 2B 45 0C             sub         eax,dword ptr [bb]  
+00EF4E0C 89 45 FC             mov         dword ptr [ss],eax  
+    int orig_s = g_pfnTarget(aa, bb);
+00EF4E0F 8B 4D 0C             mov         ecx,dword ptr [bb]  
+00EF4E12 51                   push        ecx  
+00EF4E13 8B 55 08             mov         edx,dword ptr [aa]  
+00EF4E16 52                   push        edx  
+00EF4E17 FF 15 40 A5 EF 00    call        dword ptr [g_pfnTarget (0EFA540h)]  // 这是一个正常的函数调用，依旧会有参数压栈，返回值压栈。
+00EF4E1D 83 C4 08             add         esp,8  
+00EF4E20 89 45 F8             mov         dword ptr [orig_s],eax  
+    return ss;
+00EF4E23 8B 45 FC             mov         eax,dword ptr [ss]  
+}
+
+注意： g_pfnTarget = 0x00ee00c0 是函数指针，这个指针值为 0x00ee00c0 。还记得我们在第8步的处理吗！target函数就是在那时被替换的。
+
+12、调用原始函数。
+00EE00C0 55                   push        ebp  
+00EE00C1 8B EC                mov         ebp,esp  
+00EE00C3 51                   push        ecx  
+00EE00C4 8B 45 08             mov         eax,dword ptr [ebp+8]  
+00EE00C7 E9 1B 4D 01 00       jmp         TargetFunc+7h (0EF4DE7h)  
+00EE00CC CC                   int         3  
+00EE00CD CC                   int         3 
+
+我们可以看到，call dword ptr [g_pfnTarget (0EFA540h)]后，EIP=00EE00C0了，这一段代码就是我们从target拷贝过来的。执行完7bytes入口指令，然后再jump回真正的target继续执行。
+
+int TargetFunc(int a, int b)
+{
+00EF4DE0 E9 1B 00 00 00       jmp         Fake_Target (0EF4E00h)  
+    int s = a + b;
+00EF4DE5 CC                   int         3  
+00EF4DE6 CC                   int         3  
+00EF4DE7 03 45 0C             add         eax,dword ptr [b]  	// jmp后，EIP会到这里继续执行。
+00EF4DEA 89 45 FC             mov         dword ptr [s],eax  
+
+13、结束！
+函数返回的情况，我们在第10步已经分析过一次了，因为每次call都是一次完整的参数压栈，返回地址压栈，跳转执行，然后ret回来继续执行，所以，中间插入的detour jump并不影响函数完整性。

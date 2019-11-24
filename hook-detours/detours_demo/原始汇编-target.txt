@@ -1,0 +1,40 @@
+int TargetFunc(int a, int b)
+{
+00EF4DE0 55                   push        ebp  
+00EF4DE1 8B EC                mov         ebp,esp  
+00EF4DE3 51                   push        ecx  
+    int s = a + b;
+00EF4DE4 8B 45 08             mov         eax,dword ptr [a]  
+00EF4DE7 03 45 0C             add         eax,dword ptr [b]  
+00EF4DEA 89 45 FC             mov         dword ptr [s],eax  
+    return s;
+00EF4DED 8B 45 FC             mov         eax,dword ptr [s]  
+}
+00EF4DF0 8B E5                mov         esp,ebp  
+00EF4DF2 5D                   pop         ebp  
+00EF4DF3 C3                   ret  
+
+
+int Fake_Target(int aa, int bb)
+{
+00EF4E00 55                   push        ebp  
+00EF4E01 8B EC                mov         ebp,esp  
+00EF4E03 83 EC 08             sub         esp,8  
+    int ss = aa - bb;
+00EF4E06 8B 45 08             mov         eax,dword ptr [aa]  
+00EF4E09 2B 45 0C             sub         eax,dword ptr [bb]  
+00EF4E0C 89 45 FC             mov         dword ptr [ss],eax  
+    int orig_s = g_pfnTarget(aa, bb);
+00EF4E0F 8B 4D 0C             mov         ecx,dword ptr [bb]  
+00EF4E12 51                   push        ecx  
+00EF4E13 8B 55 08             mov         edx,dword ptr [aa]  
+00EF4E16 52                   push        edx  
+00EF4E17 FF 15 40 A5 EF 00    call        dword ptr [g_pfnTarget (0EFA540h)]  
+00EF4E1D 83 C4 08             add         esp,8  
+00EF4E20 89 45 F8             mov         dword ptr [orig_s],eax  
+    return ss;
+00EF4E23 8B 45 FC             mov         eax,dword ptr [ss]  
+}
+00EF4E26 8B E5                mov         esp,ebp  
+00EF4E28 5D                   pop         ebp  
+00EF4E29 C3   
