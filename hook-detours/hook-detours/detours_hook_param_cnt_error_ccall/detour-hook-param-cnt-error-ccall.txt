@@ -1,0 +1,23 @@
+    int i = 0;
+01244E6B C7 45 FC 00 00 00 00 mov         dword ptr [i],0  
+
+    i = 1;
+01244E72 C7 45 FC 01 00 00 00 mov         dword ptr [i],1  
+    TargetFunc(1, 2, 3);
+01244E79 6A 03                push        3  
+	// EIP = 01244E79 ESP = 0038FB54 EBP = 0038FB5C
+	
+01244E7B 6A 02                push        2  
+01244E7D 6A 01                push        1  
+01244E7F E8 5C FF FF FF       call        TargetFunc (01244DE0h)  
+01244E84 83 C4 0C             add         esp,0Ch  
+    i = 2;
+01244E87 C7 45 FC 02 00 00 00 mov         dword ptr [i],2  
+
+    return 0;
+01244E8E 33 C0                xor         eax,eax  
+}
+01244E90 8B E5                mov         esp,ebp  
+01244E92 5D                   pop         ebp  
+01244E93 C3                   ret  
+--- No source file -------------------------------------------------------------

@@ -1,0 +1,102 @@
+
+typedef int(__stdcall *NewTargetFunc)(int a, int b, int c);
+typedef int(__stdcall *OldTargetFunc)(int a, int b);
+
+OldTargetFunc g_pfnTarget = nullptr;
+OldTargetFunc g_pfnFakeTarget = nullptr;
+
+int __stdcall TargetFunc(int a, int b, int c)
+{
+01004DE0 E9 1B 00 00 00       jmp         Fake_Target (01004E00h)  
+    int s = a + b + c;
+01004DE5 CC                   int         3  
+01004DE6 CC                   int         3  
+01004DE7 03 45 0C             add         eax,dword ptr [b]  
+01004DEA 03 45 10             add         eax,dword ptr [c]  
+01004DED 89 45 FC             mov         dword ptr [s],eax  
+    return s;
+01004DF0 8B 45 FC             mov         eax,dword ptr [s]  
+}
+01004DF3 8B E5                mov         esp,ebp  
+01004DF5 5D                   pop         ebp  
+01004DF6 C2 0C 00             ret         0Ch  
+--- No source file -------------------------------------------------------------
+
+int __stdcall Fake_Target(int aa, int bb)
+{
+01004E00 55                   push        ebp  
+	// EIP = 01004E00 ESP = 0018FE0C EBP = 0018FE24
+	// 0x0018FE04  547c5b0f 0018fe14 01004e84
+	// 0x0018FE10  00000001 00000002 00000003
+	
+01004E01 8B EC                mov         ebp,esp  
+01004E03 51                   push        ecx  
+    int ss = aa - bb;
+01004E04 8B 45 08             mov         eax,dword ptr [aa]  
+    int ss = aa - bb;
+01004E07 2B 45 0C             sub         eax,dword ptr [bb]  
+01004E0A 89 45 FC             mov         dword ptr [ss],eax  
+    //int orig_s = g_pfnTarget(aa, bb);
+	
+    return ss;
+01004E0D 8B 45 FC             mov         eax,dword ptr [ss]  
+}
+01004E10 8B E5                mov         esp,ebp  
+01004E12 5D                   pop         ebp  
+01004E13 C2 08 00             ret         8
+EIP = 01004E13 ESP = 0018FE0C EBP = 0018FE24  
+--- No source file -------------------------------------------------------------
+
+int __cdecl add_ccall(int a, int b)
+{
+    return a + b;
+}
+
+int __stdcall add_stdcall(int a, int b)
+{
+    return a + b;
+}
+
+int add_default(int a, int b)
+{
+    return a + b;
+}
+
+int main()
+{
+01004E20 55                   push        ebp  
+01004E21 8B EC                mov         ebp,esp  
+01004E23 83 EC 08             sub         esp,8  
+    HANDLE hProc = ::GetModuleHandle(nullptr);
+    g_pfnTarget = (OldTargetFunc)&TargetFunc;
+    g_pfnFakeTarget = (OldTargetFunc)&Fake_Target;
+
+    DetourTransactionBegin();
+    DetourUpdateThread(::GetCurrentThread());
+    DetourAttach((PVOID*)&g_pfnTarget, (LPVOID)g_pfnFakeTarget);
+    DetourTransactionCommit();
+
+    int i = 0;
+01004E6B C7 45 FC 00 00 00 00 mov         dword ptr [i],0  
+
+    i = 1;
+01004E72 C7 45 FC 01 00 00 00 mov         dword ptr [i],1  
+    TargetFunc(1, 2, 3);
+01004E79 6A 03                push        3  
+	// EIP = 01004E79 ESP = 0018FE1C EBP = 0018FE24
+01004E7B 6A 02                push        2  
+01004E7D 6A 01                push        1  
+01004E7F E8 5C FF FF FF       call        TargetFunc (01004DE0h)  
+	// EIP = 01004E7F ESP = 0018FE10 EBP = 0018FE24
+	// 0x0018FE10  00000001 00000002 00000003
+    i = 2;
+01004E84 C7 45 FC 02 00 00 00 mov         dword ptr [i],2  
+	// EIP = 01004E84 ESP = 0018FE18 EBP = 0018FE24
+	
+    return 0;
+01004E8B 33 C0                xor         eax,eax  
+}
+01004E8D 8B E5                mov         esp,ebp  
+01004E8F 5D                   pop         ebp  
+01004E90 C3                   ret  
+--- No source file -------------------------------------------------------------
