@@ -1,2 +1,6 @@
 
 .DS_Store
+Debug
+ipch
+*.opendb
+*.db
